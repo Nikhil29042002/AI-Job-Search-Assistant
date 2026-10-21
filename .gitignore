@@ -1,0 +1,24 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets and API keys
+.streamlit/secrets.toml
+.env
+
+# Local databases and user data
+*.db
+*.sqlite
+*.sqlite3
+
+# Local backups
+app_backup.py
+app_before_gemini_fix.py
+
+# OS files
+.DS_Store
+Thumbs.db
+app_backup.py.py
