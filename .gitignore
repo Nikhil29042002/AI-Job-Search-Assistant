@@ -22,3 +22,7 @@ app_before_gemini_fix.py
 .DS_Store
 Thumbs.db
 app_backup.py.py
+# Additional local backup files
+*.bak
+*_backup.py
+*_before_final_changes.py

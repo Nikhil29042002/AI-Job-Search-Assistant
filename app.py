@@ -11,6 +11,107 @@ from datetime import datetime
 import time
 DB_NAME = "job_applications.db"
 
+def get_gemini_client():
+    """Create a Gemini client without retrying quota-exhaustion (HTTP 429) errors."""
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing. Add it to .streamlit/secrets.toml."
+        )
+
+    
+    return genai.Client(
+        api_key=api_key,
+        http_options=genai.types.HttpOptions(
+            timeout=30000,
+            retry_options=genai.types.HttpRetryOptions(
+                attempts=1,
+                initial_delay=1.0,
+                max_delay=3.0,
+                exp_base=2.0,
+                jitter=0.3,
+                http_status_codes=[408, 500, 502, 503, 504],
+            ),
+        ),
+    )
+
+
+
+def show_gemini_error(error, feature_name):
+    """Display a readable message without dumping a traceback into the page."""
+    message = str(error)
+    lowered = message.lower()
+
+    if (
+        "429" in message
+        or "resource_exhausted" in lowered
+        or "quota" in lowered
+    ):
+        st.warning(
+            f"{feature_name}: Gemini API quota is exhausted or rate-limited. "
+            "Wait for the quota to reset, or check your limits at "
+            "https://ai.google.dev/gemini-api/docs/rate-limits."
+        )
+    elif "gemini_api_key" in lowered or "api key" in lowered:
+        st.error(
+            f"{feature_name}: Gemini API key is missing or invalid. "
+            "Check .streamlit/secrets.toml without sharing the key."
+        )
+    else:
+        st.error(f"{feature_name}: {type(error).__name__}: {error}")
+
+
+def init_database():
+    """Create the application tracker table if it does not already exist."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company TEXT NOT NULL,
+                job_title TEXT NOT NULL,
+                location TEXT,
+                job_url TEXT,
+                application_date TEXT,
+                status TEXT,
+                follow_up_date TEXT,
+                notes TEXT
+            )
+            """
+        )
+
+
+def load_applications():
+    """Load saved applications from SQLite in display-friendly form."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT company, job_title, location, job_url,
+                   application_date, status, follow_up_date, notes
+            FROM job_applications
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    return [
+        {
+            "Company": row["company"] or "",
+            "Job Title": row["job_title"] or "",
+            "Location": row["location"] or "",
+            "Job URL": row["job_url"] or "",
+            "Application Date": row["application_date"] or "",
+            "Status": row["status"] or "",
+            "Follow-up Date": row["follow_up_date"] or "",
+            "Notes": row["notes"] or "",
+        }
+        for row in rows
+    ]
+
+
+init_database()
+
+
 st.set_page_config(
     page_title="AI Job Search Assistant",
     page_icon="🎯",
@@ -206,19 +307,7 @@ if analysis:
 
     if st.button("Generate AI Recommendations"):
         try:
-            client = genai.Client(
-                api_key=st.secrets["GEMINI_API_KEY"],
-                http_options=genai.types.HttpOptions(
-                    retry_options=genai.types.HttpRetryOptions(
-                        attempts=3,
-                        initial_delay=1.0,
-                        max_delay=4.0,
-                        exp_base=2.0,
-                        jitter=0.5,
-                        http_status_codes=[408, 500, 502, 503, 504],
-                    )
-                ),
-            )
+            client = get_gemini_client()
 
 
             prompt = f"""
@@ -252,7 +341,7 @@ skills to a resume. Keep the answer clear and actionable.
                 "Gemini is analyzing your resume and job description..."
             ):
                 response = client.models.generate_content(
-                    model="gemini-3.8-flash",
+                    model="gemini-3.5-flash",
                     contents=prompt,
                 )
 
@@ -265,20 +354,10 @@ skills to a resume. Keep the answer clear and actionable.
                     "Please try again."
                 )
 
+              
         except Exception as error:
-            error_message = str(error)
+            show_gemini_error(error, "AI career advice")
 
-        if "429" in error_message or "RESOURCE_EXHAUSTED" in error_message:
-            st.warning(
-                "Gemini API quota exceeded. Your free-tier limit may be "
-                "exhausted. Please wait until the quota resets or check "
-                "your limits at https://ai.google.dev/gemini-api/docs/rate-limits."
-            )
-        else:
-            st.error(
-                "The AI request failed. Please check your API key, "
-                "model availability, internet connection, and API quota."
-            )
             
 # FEATURE 1: Advanced Job Description Analyzer
 
@@ -300,19 +379,7 @@ if st.button("Analyze Job Requirements"):
         )
     else:
         try:
-            client = genai.Client(
-                api_key=st.secrets["GEMINI_API_KEY"],
-                http_options=genai.types.HttpOptions(
-                    retry_options=genai.types.HttpRetryOptions(
-                        attempts=3,
-                        initial_delay=1.0,
-                        max_delay=4.0,
-                        exp_base=2.0,
-                        jitter=0.5,
-                        http_status_codes=[408, 429, 500, 502, 503, 504],
-                        )
-                    ),
-                )
+            client = get_gemini_client()
 
 
             prompt = f"""
@@ -357,7 +424,7 @@ Use only evidence in the supplied resume.
             ):
                 start_time = time.perf_counter()
                 response = client.models.generate_content(
-                    model="gemini-3.8-flash",
+                    model="gemini-3.5-flash",
                     contents=prompt,
                 )
                 elapsed = time.perf_counter() - start_time
@@ -371,17 +438,10 @@ Use only evidence in the supplied resume.
                     "No analysis was returned. Please try again."
                 )
 
+        
         except Exception as error:
-            error_message = str(error)
+            show_gemini_error(error, "Job requirements analysis")
 
-        if "429" in error_message or "RESOURCE_EXHAUSTED" in error_message:
-            st.warning(
-                "Gemini API quota exceeded. Your free-tier limit may be "
-                "exhausted. Please wait until the quota resets or check "
-                "your limits at https://ai.google.dev/gemini-api/docs/rate-limits."
-            )
-        else:
-            st.error("Unable to analyze the job requirements. Please try again.")
             
 # FEATURE 2: Downloadable Analysis Report
 
@@ -574,11 +634,9 @@ Return your response with these headings:
                 with st.spinner(
                     "Gemini is reviewing your resume..."
                 ):
-                   client = genai.Client(
-                        api_key=st.secrets["GEMINI_API_KEY"]
-                    )
-                   response = client.models.generate_content(
-                        model="gemini-3.8-flash",
+                    client = get_gemini_client()
+                    response = client.models.generate_content(
+                        model="gemini-3.5-flash",
                         contents=prompt,
                     )
 
@@ -594,11 +652,7 @@ Return your response with these headings:
                     )
 
             except Exception as e:
-                st.error(
-                    "Could not generate improvements. "
-                    "Check your Gemini configuration and try again."
-                )
-                st.exception(e)
+                show_gemini_error(e, "Resume improvement")
 
     improvement_result = st.session_state.get(
         "resume_improvement_result"
@@ -654,9 +708,7 @@ if st.button("Generate Interview Questions"):
         )
     else:
         try:
-            client = genai.Client(
-                api_key=st.secrets["GEMINI_API_KEY"]
-            )
+            client = get_gemini_client()
 
             interview_prompt = f"""
 You are an experienced technical interviewer and career coach.
@@ -685,7 +737,7 @@ Instructions:
                 "Preparing your personalized interview..."
             ):
                 interview_response = client.models.generate_content(
-                    model="gemini-3.8-flash",
+                    model="gemini-3.5-flash",
                     contents=interview_prompt,
                 )
 
@@ -700,11 +752,7 @@ Instructions:
                 )
 
         except Exception as error:
-            st.error(
-                "Could not generate interview questions. "
-                "Please try again in a moment."
-            )
-            st.caption(f"Technical details: {error}")
+            show_gemini_error(error, "Interview preparation")
 
 if st.session_state.get("interview_result"):
     st.download_button(
@@ -721,7 +769,7 @@ st.header("📋 Job Application Tracker")
 st.write("Record applications and track your job-search progress.")
 
 if "job_applications" not in st.session_state:
-    st.session_state.job_applications = []
+    st.session_state.job_applications = load_applications()
 
 with st.form("job_application_form", clear_on_submit=True):
     st.subheader("Add a job application")
@@ -794,6 +842,7 @@ if submitted:
                 )
             )
 
+        st.session_state.job_applications = load_applications()
         st.success("Application added and saved to database!")
     else:
         st.error("Please enter both company name and job title.")
@@ -824,26 +873,10 @@ if applications:
     )
 
     if st.button("🗑️ Clear all applications"):
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.execute("DELETE FROM job_applications")
         st.session_state.job_applications = []
+        st.success("All applications were deleted.")
         st.rerun()
 else:
     st.info("No applications yet. Add your first application above.")
-# JOB APPLICATION DATABASE
-
-
-def init_database():
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS job_applications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                company TEXT,
-                job_title TEXT,
-                location TEXT,
-                job_url TEXT,
-                application_date TEXT,
-                status TEXT,
-                follow_up_date TEXT,
-                notes TEXT
-            )
-        """)
-init_database()
